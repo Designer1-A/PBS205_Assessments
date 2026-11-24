@@ -18,14 +18,14 @@ class ChatApp(tk.Tk):
         super().__init__()
         self.title("Ahmed's PBT205 Chat")
         self.geometry("520x460")
-        self.incoming = queue.Queue()       # the listener thread puts items here, the window reads them
+        self.incoming = queue.Queue() 
         self.pub = self.listener = None
         self.username = self.room = ""
         self.host, self.port = "localhost", 5672
         self._build_login()
         self.after(100, self._drain)
 
-    # ---------- login screen ----------
+    # login screen
     def _build_login(self):
         self.login = ttk.Frame(self, padding=24)
         self.login.pack(fill="both", expand=True)
@@ -72,7 +72,7 @@ class ChatApp(tk.Tk):
         self._build_chat()
         self._enter_room(self.v_room.get())
 
-    # ---------- chat screen ----------
+    # chat screen
     def _build_chat(self):
         self.chat = ttk.Frame(self, padding=10)
         self.chat.pack(fill="both", expand=True)
@@ -89,8 +89,8 @@ class ChatApp(tk.Tk):
         body = ttk.Frame(self.chat)
         body.pack(fill="both", expand=True, pady=8)
         self.log = tk.Text(body, state="disabled", wrap="word")
-        self.log.tag_configure("me", foreground="#0b6e4f")     # your own messages
-        self.log.tag_configure("sys", foreground="#888888")    # notices such as "-- earlier messages --"
+        self.log.tag_configure("me", foreground="#0b6e4f")   
+        self.log.tag_configure("sys", foreground="#888888")    
         sb = ttk.Scrollbar(body, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -111,7 +111,7 @@ class ChatApp(tk.Tk):
             self.listener.stop()
         self.room = clean_room(room)
         self._append(f"-- joined #{self.room} --", "sys")
-        # The listener shows the room's history first, then live messages.
+        # The listener shows the room's history first, then live messages
         self.listener = Listener(self.host, self.port, self.room,
                                  lambda m: self.incoming.put(("msg", m)),
                                  lambda e: self.incoming.put(("err", e)),
@@ -162,7 +162,7 @@ class ChatApp(tk.Tk):
         if self.listener:
             self.listener.stop()
         if self.pub:
-            self.pub.close()                 # closing frees the username
+            self.pub.close()       
         self.destroy()
 
 
