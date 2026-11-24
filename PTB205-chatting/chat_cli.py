@@ -33,9 +33,12 @@ def main():
     def show_message(message):
         print(f"\r{format_message(message)}")
 
+    def show_notice(text):
+        print(f"\r{text}")
+
     def start_listener(r):
         l = Listener(host, port, r, show_message, lambda e: print(f"\n! {e}"),
-                     args.rabbit_user,args.rabbit_pass)
+                     on_notice = show_notice, rabbit_user=args.rabbit_user, rabbit_pass=args.rabbit_pass)
         l.start()
         return l
 

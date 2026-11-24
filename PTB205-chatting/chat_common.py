@@ -2,13 +2,13 @@ import json, re, threading, pika, uuid
 from datetime import datetime, timezone
 from pika.exceptions import AMQPError, ChannelClosedByBroker
 
-EXCHANGE = "chat"
+EXCHANGE = "chat" # topic exchange used by all rooms
 DEFAULT_ROOM = "United"
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 5672
-HISTORY_QUEUE = "chat.history.requests"
-HISTORY_LIMIT = 10
-HISTORY_WAIT_SECONDS = 2
+HISTORY_QUEUE = "chat.history.requests" # a queue where clients ask for message history
+HISTORY_LIMIT = 10 # how many recent messages we keep per room
+HISTORY_WAIT_SECONDS = 2 # how long a new joiner waits for history
 
 def parse_endpoint(endpoint):
     endpoint = (endpoint or "").strip()
@@ -75,25 +75,39 @@ class Publisher:
             pass
 
 class Listener(threading.Thread):
-    def __init__(self, host, port, room, on_message, on_error=None, rabbit_user="guest", rabbit_pass="guest"):
+    def __init__(self, host, port, room, on_message, on_error=None, rabbit_user="guest", rabbit_pass="guest",on_notice=None):
         super().__init__(daemon=True)
         self._params = make_parameters(host, port, rabbit_user, rabbit_pass)
         self.room = clean_room(room)
         self._on_message = on_message
         self._on_error = on_error or (lambda e: None)
+        self._on_notice = on_notice or (lambda t: None)
         self._conn = None
         self._channel = None
         self._stopping = False
+        self._loading = True # Remains true until the history has arrived
+        self._buffer = [] # live messages that arrive while we wait for the history
 
     def run(self):
         try:
             self._conn = pika.BlockingConnection(self._params)
             self._channel = self._conn.channel()
             self._channel.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=False)
-
-            queue = self._channel.queue_declare(queue="", exclusive=True, auto_delete=True).method.queue
-            self._channel.queue_bind(exchange=EXCHANGE, queue=queue, routing_key=routing_key(self.room))
-            self._channel.basic_consume(queue=queue, on_message_callback=self._callback, auto_ack=True)
+ 
+            # Subscribe to the room FIRST, so no live message can be missed
+            live_q = self._channel.queue_declare(queue="", exclusive=True, auto_delete=True).method.queue
+            self._channel.queue_bind(exchange=EXCHANGE, queue=live_q, routing_key=routing_key(self.room))
+            self._channel.basic_consume(queue=live_q, on_message_callback=self._on_live, auto_ack=True)
+ 
+            # Then ask the history service for the latest messages of this room
+            reply_q = self._channel.queue_declare(queue="", exclusive=True, auto_delete=True).method.queue
+            self._channel.basic_consume(queue=reply_q, on_message_callback=self._on_history, auto_ack=True)
+            self._channel.basic_publish(exchange="", routing_key=HISTORY_QUEUE,
+                                        properties=pika.BasicProperties(reply_to=reply_q),
+                                        body=json.dumps({"room": self.room}).encode("utf-8"))
+ 
+            # If the history service never answers, carry on without history
+            self._conn.call_later(HISTORY_WAIT_SECONDS, self._history_timeout)
             self._channel.start_consuming()
         except AMQPError as exc:
             if not self._stopping:
@@ -105,11 +119,44 @@ class Listener(threading.Thread):
             except AMQPError:
                 pass
 
-    def _callback(self, ch, method, properties, body):
+    # live messages
+    def _on_live(self, ch, method, properties, body):
         try:
-            self._on_message(json.loads(body.decode("utf-8")))
+            message = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeError):
-            pass
+            return                              
+        if self._loading:
+            self._buffer.append(message)         
+        else:
+            self._on_message(message)
+
+    def _on_history(self, ch, method, properties, body):
+        if not self._loading:
+            return
+        try:
+            history = json.loads(body.decode("utf-8")).get("messages", [])
+        except (ValueError, UnicodeError, AttributeError):
+            history = []
+        self._finish_loading(history)
+ 
+    def _history_timeout(self):
+        if self._loading:
+            self._on_notice("history service not reachable, showing live messages only")
+            self._finish_loading([])
+ 
+    def _finish_loading(self, history):
+        """Show the history (oldest first), then the live messages that arrived meanwhile"""
+        self._loading = False
+        if history:
+            self._on_notice("-- earlier messages --")
+            for message in history:
+                self._on_message(message)
+            self._on_notice("-- end of history --")
+        shown = {m.get("id") for m in history}
+        for message in self._buffer:
+            if message.get("id") not in shown:
+                self._on_message(message)
+        self._buffer = []
 
     def stop(self):
         self._stopping = True

@@ -1,24 +1,31 @@
+"""
+Run one window per user:  python chat_gui.py
+"""
 import queue
 import tkinter as tk
 from tkinter import messagebox, ttk
+
 from pika.exceptions import AMQPError
-from chat_common import (DEFAULT_ROOM, Listener, Publisher, clean_room, format_message, parse_endpoint)
+
+from chat_common import (DEFAULT_ROOM, Listener, Publisher, UsernameTaken, clean_room,
+                         format_message, parse_endpoint)
 
 PRESET_ROOMS = ["United", "Como", "Milan", "Bologna", "Random", "Tech", "Study"]
+
 
 class ChatApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Ahmed's PBT205 Chat")
-        self.geometry("800x500")
-        self.incoming = queue.Queue()
+        self.geometry("520x460")
+        self.incoming = queue.Queue()       # the listener thread puts items here, the window reads them
         self.pub = self.listener = None
         self.username = self.room = ""
         self.host, self.port = "localhost", 5672
         self._build_login()
         self.after(100, self._drain)
 
-    # login screen
+    # ---------- login screen ----------
     def _build_login(self):
         self.login = ttk.Frame(self, padding=24)
         self.login.pack(fill="both", expand=True)
@@ -32,50 +39,58 @@ class ChatApp(tk.Tk):
         ttk.Label(self.login, text="Room").grid(row=3, column=0, sticky="w", pady=4)
         ttk.Combobox(self.login, textvariable=self.v_room, values=PRESET_ROOMS, width=26).grid(row=3, column=1, pady=4)
         ttk.Button(self.login, text="Join", command=self._join).grid(row=4, columnspan=2, pady=14)
-        self.bind("<Return>", lambda e:self._join() if self.login.winfo_exists() and self.login.winfo_ismapped() else None)
+        self.bind("<Return>", lambda e: self._join() if self.login.winfo_exists() and self.login.winfo_ismapped() else None)
 
     def _join(self):
         user = self.v_user.get().strip()
         if not user:
-            messagebox.showwarning("Username is needed, Please enter a Username: ")
+            messagebox.showwarning("Username needed", "Please enter a username.")
             return
         try:
             self.host, self.port = parse_endpoint(self.v_endpoint.get())
         except ValueError:
-            messagebox.showerror("Bad endpoint, use port (5672) or host:port")
+            messagebox.showerror("Bad endpoint", "Use a port (5672) or host:port.")
             return
-        pub = Publisher(self.host, self.port)
+
+        # Connecting with a username claims it. If someone else has it, we stay on this screen.
+        pub = Publisher(self.host, self.port, username=user)
         try:
             pub.connect()
+        except UsernameTaken:
+            messagebox.showwarning("Username taken",
+                                   f"The username '{user}' is already in use.\nPlease choose a different name.")
+            return
         except AMQPError as exc:
-            messagebox.showerror("Conection failed",
+            messagebox.showerror("Connection failed",
                                  f"Could not reach RabbitMQ at {self.host}:{self.port}.\n"
                                  f"Is the Docker container running?\n\n{exc}")
             return
-        self.pub, self.username = pub, user
 
+        self.pub, self.username = pub, user
         self.unbind("<Return>")
         self.login.destroy()
         self._build_chat()
         self._enter_room(self.v_room.get())
 
+    # ---------- chat screen ----------
     def _build_chat(self):
         self.chat = ttk.Frame(self, padding=10)
         self.chat.pack(fill="both", expand=True)
 
         top = ttk.Frame(self.chat)
         top.pack(fill="x")
-        self.label_room = ttk.Label(top, font=("", 12, "bold"))
-        self.label_room.pack(side="left")
+        self.lbl_room = ttk.Label(top, font=("", 12, "bold"))
+        self.lbl_room.pack(side="left")
         ttk.Button(top, text="Switch", command=self._switch).pack(side="right")
         self.v_switch = tk.StringVar()
-        ttk.Combobox(top, textvariable=self.v_switch, values=PRESET_ROOMS, width=14).pack(side="right", padx=6)
+        combo = ttk.Combobox(top, textvariable=self.v_switch, values=PRESET_ROOMS, width=14)
+        combo.pack(side="right", padx=6)
 
         body = ttk.Frame(self.chat)
         body.pack(fill="both", expand=True, pady=8)
         self.log = tk.Text(body, state="disabled", wrap="word")
-        self.log.tag_configure("me", foreground="#0b6e4f")
-        self.log.tag_configure("sys", foreground="#888888")
+        self.log.tag_configure("me", foreground="#0b6e4f")     # your own messages
+        self.log.tag_configure("sys", foreground="#888888")    # notices such as "-- earlier messages --"
         sb = ttk.Scrollbar(body, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -95,12 +110,14 @@ class ChatApp(tk.Tk):
         if self.listener:
             self.listener.stop()
         self.room = clean_room(room)
+        self._append(f"-- joined #{self.room} --", "sys")
+        # The listener shows the room's history first, then live messages.
         self.listener = Listener(self.host, self.port, self.room,
                                  lambda m: self.incoming.put(("msg", m)),
-                                 lambda e: self.incoming.put(("err", e)))
+                                 lambda e: self.incoming.put(("err", e)),
+                                 on_notice=lambda t: self.incoming.put(("note", t)))
         self.listener.start()
-        self.label_room.config(text=f"#{self.room}   ({self.username})")
-        self._append(f"-- joined #{self.room} --", "sys")
+        self.lbl_room.config(text=f"#{self.room}   ({self.username})")
 
     def _switch(self):
         new = self.v_switch.get().strip()
@@ -114,16 +131,21 @@ class ChatApp(tk.Tk):
         try:
             self.pub.publish(self.username, self.room, text)
             self.v_msg.set("")
+        except UsernameTaken:
+            self._append("! your username was taken while you were disconnected, please restart", "sys")
         except AMQPError as exc:
             self._append(f"! could not send: {exc}", "sys")
 
     def _drain(self):
+        """Runs on the window's own thread: moves items from the listener thread onto the screen."""
         try:
             while True:
                 kind, payload = self.incoming.get_nowait()
                 if kind == "msg":
                     mine = payload.get("user") == self.username
                     self._append(format_message(payload), "me" if mine else None)
+                elif kind == "note":
+                    self._append(payload, "sys")
                 else:
                     self._append(f"! {payload}", "sys")
         except queue.Empty:
@@ -140,7 +162,7 @@ class ChatApp(tk.Tk):
         if self.listener:
             self.listener.stop()
         if self.pub:
-            self.pub.close()
+            self.pub.close()                 # closing frees the username
         self.destroy()
 
 
