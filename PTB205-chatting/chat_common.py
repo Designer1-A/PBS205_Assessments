@@ -1,11 +1,14 @@
-import json, re, threading, pika
+import json, re, threading, pika, uuid
 from datetime import datetime, timezone
-from pika.exceptions import AMQPError
+from pika.exceptions import AMQPError, ChannelClosedByBroker
 
 EXCHANGE = "chat"
 DEFAULT_ROOM = "United"
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 5672
+HISTORY_QUEUE = "chat.history.requests"
+HISTORY_LIMIT = 10
+HISTORY_WAIT_SECONDS = 2
 
 def parse_endpoint(endpoint):
     endpoint = (endpoint or "").strip()
@@ -29,7 +32,7 @@ def make_parameters(host, port, rabbit_user="guest", rabbit_pass="guest", heartb
     return pika.ConnectionParameters(host = host, port = port, credentials = pika.PlainCredentials(rabbit_user, rabbit_pass), heartbeat = heartbeat, connection_attempts=1, socket_timeout=5)
 
 def build_message(user, room, text):
-    return json.dumps({"user": user, "room": clean_room(room), "text": text, "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),})
+    return json.dumps({"id": uuid.uuid4().hex, "user": user, "room": clean_room(room), "text": text, "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),})
 
 def format_message(message):
     try:
