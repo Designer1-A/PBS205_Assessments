@@ -16,7 +16,7 @@ PRESET_ROOMS = ["United", "Como", "Milan", "Bologna", "Random", "Tech", "Study"]
 class ChatApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Ahmed's PBT205 Chat")
+        self.title("PBT205-Group1 Chat")
         self.geometry("520x460")
         self.incoming = queue.Queue() 
         self.pub = self.listener = None
