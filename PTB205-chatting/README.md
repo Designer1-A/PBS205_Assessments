@@ -3,7 +3,7 @@
 ## Run order
 1. RabbitMQ:      docker run -it --rm --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
 2. Install:       pip install -r requirements.txt   (same as before: pika)
-3. History:       python history_service.py 5672    (start ONE, before the chat clients)
+3. History:       python service_history.py 5672    (start ONE, before the chat clients)
 4. Chat clients:  python chat_cli.py <username> 5672 --room <room>
                   python chat_gui.py
 
